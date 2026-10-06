@@ -273,7 +273,6 @@ function Home() {
             lat: fix.lat,
             lon: fix.lon,
             track: fix.track,
-            plan: fix.plan,
             label: `${flight.fn} ${flight.tail}${fix.alt ? ` · ${fix.alt}` : ""}`,
           });
         })
@@ -435,7 +434,6 @@ function Home() {
                       lat: fix.lat,
                       lon: fix.lon,
                       track: fix.track,
-                      plan: fix.plan,
                       label: `${row.fn} ${row.tail}${fix.alt ? ` · ${fix.alt}` : ""}`,
                     });
                   }).catch(() => undefined);

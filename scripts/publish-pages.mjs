@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = join(root, "site");
 
-const { AIRPORTS, BOS, callsign } = await import("../src/lib/flights.ts");
+const { AIRPORTS, BOS } = await import("../src/lib/flights.ts");
 
 async function snapshot() {
   if (process.env.BOARD_CACHE) {
@@ -54,60 +54,25 @@ function enroute(row, kind) {
   return Boolean(row.live || row.st === "Estimated" || row.st === "Airborne");
 }
 
-async function flightPlan(call, row) {
-  const filed = String(call || "").trim();
-  if (filed) {
-    try {
-      const response = await fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(filed)}`, {
-        headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
-        signal: AbortSignal.timeout(8000),
-      });
-      if (response.ok) {
-        const parsed = await response.json();
-        const route = parsed.response?.flightroute;
-        const origin = route?.origin;
-        const dest = route?.destination;
-        if (Number.isFinite(origin?.latitude) && Number.isFinite(dest?.latitude)) {
-          return {
-            from: origin.iata_code || origin.icao_code || "",
-            to: dest.iata_code || dest.icao_code || "",
-            a: [origin.latitude, origin.longitude],
-            b: [dest.latitude, dest.longitude],
-          };
-        }
-      }
-    } catch {
-      // Fall back to the airport pair already on the board.
-    }
-  }
-  if (row.from && AIRPORTS[row.from]) return { from: row.from, to: "BOS", a: [AIRPORTS[row.from][1], AIRPORTS[row.from][2]], b: [...BOS] };
-  if (row.to && AIRPORTS[row.to]) return { from: "BOS", to: row.to, a: [...BOS], b: [AIRPORTS[row.to][1], AIRPORTS[row.to][2]] };
-  return null;
-}
-
 async function attachFixes(rows) {
   const seen = new Set();
   let found = 0;
-  let plans = 0;
   for (const row of rows) {
     if (!row.tail || seen.has(row.tail)) continue;
     seen.add(row.tail);
     try {
       const fix = await adsbFix(row.tail);
-      const plan = await flightPlan(fix?.call || callsign(row.fn || ""), row);
-      if (fix) found += 1;
-      if (plan) plans += 1;
+      if (!fix) continue;
+      found += 1;
       for (const other of rows) {
-        if (other.tail !== row.tail) continue;
-        if (fix) other.fix = fix;
-        if (plan) other.plan = plan;
+        if (other.tail === row.tail) other.fix = fix;
       }
     } catch {
       // A missing fix just leaves the route line.
     }
     await new Promise((resolve) => setTimeout(resolve, 350));
   }
-  console.log(`ADS-B positions: ${found} of ${seen.size} enroute tails, flight plans: ${plans}`);
+  console.log(`ADS-B positions: ${found} of ${seen.size} enroute tails`);
 }
 
 const tracked = [
@@ -116,11 +81,8 @@ const tracked = [
 ];
 await attachFixes(tracked);
 const fixByTail = new Map(tracked.filter((row) => row.fix).map((row) => [row.tail, row.fix]));
-const planByTail = new Map(tracked.filter((row) => row.plan).map((row) => [row.tail, row.plan]));
 for (const row of data.routings ?? []) {
-  if (!row.tail) continue;
-  if (fixByTail.has(row.tail)) row.fix = fixByTail.get(row.tail);
-  if (planByTail.has(row.tail)) row.plan = planByTail.get(row.tail);
+  if (row.tail && fixByTail.has(row.tail)) row.fix = fixByTail.get(row.tail);
 }
 
 const used = new Set(["BOS"]);
@@ -194,7 +156,6 @@ const html = `<!doctype html>
     .logo { height: 20px; width: 48px; object-fit: contain; object-position: left; }
     .logo.shield { width: 18px; height: 22px; }
     .plane-pin { background: none; border: none; }
-    .leaflet-tooltip.plan-tag { background: #f4efe4; border: 0; color: #14202b; font-weight: 700; box-shadow: none; }
     #pull { background: var(--navy); color: var(--paper); border: 0; font-weight: 700; }
     #pull:disabled { opacity: 0.7; }
     #map { height: 100%; min-height: 320px; }
@@ -387,22 +348,15 @@ const html = `<!doctype html>
       }
       const row = selected ? selectedRow() : null;
       const airborne = row && row.tail && row.st !== "Landed" && row.st !== "Cancelled" && (row.live || row.st === "Departed" || row.st === "Estimated" || row.outboundKind === "Departed");
-      if (row && row.plan && row.plan.a && row.plan.b) {
-        const route = L.polyline(arc(row.plan.a, row.plan.b), { color: "#14202b", weight: 3, opacity: 0.9, dashArray: "7 6" }).addTo(routes);
-        L.circleMarker(row.plan.a, { radius: 4, color: "#14202b", fillColor: "#f4efe4", fillOpacity: 1, weight: 2 }).addTo(routes).bindTooltip(row.plan.from || "Origin", { permanent: true, direction: "right", className: "plan-tag" });
-        L.circleMarker(row.plan.b, { radius: 4, color: "#14202b", fillColor: "#f4efe4", fillOpacity: 1, weight: 2 }).addTo(routes).bindTooltip(row.plan.to || "Destination", { permanent: true, direction: "left", className: "plan-tag" });
-        bounds = bounds ? bounds.extend(route.getBounds()) : route.getBounds();
-      }
       if (row && row.fix) {
         const label = (row.fn || row.outbound || row.inbound || "Aircraft") + " " + (row.tail || "") + (row.fix.alt ? " · " + row.fix.alt : "");
-        const plan = row.plan ? row.plan.from + "–" + row.plan.to : "";
         const icon = L.divIcon({
           className: "plane-pin",
           html: '<svg width="28" height="28" viewBox="0 0 28 28" style="transform:rotate(' + (Number(row.fix.track) || 0) + 'deg)"><path d="M14 1.5 L16.2 10.5 L26 13.2 L16.2 15 L15.2 22 L18 26 L14 23.2 L10 26 L12.8 22 L11.8 15 L2 13.2 L11.8 10.5 Z" fill="#14202b" stroke="#c4512c" stroke-width="1.2" stroke-linejoin="round"/></svg>',
           iconSize: [28, 28],
           iconAnchor: [14, 14],
         });
-        L.marker([row.fix.lat, row.fix.lon], { icon, zIndexOffset: 800 }).addTo(routes).bindPopup("<b>" + esc(label) + "</b>" + (plan ? "<div>Flight plan " + esc(plan) + "</div>" : "") + "<div>ADS-B from the last pull</div>");
+        L.marker([row.fix.lat, row.fix.lon], { icon, zIndexOffset: 800 }).addTo(routes).bindPopup("<b>" + esc(label) + "</b><div>ADS-B from the last pull</div>");
         const spot = L.latLng(row.fix.lat, row.fix.lon);
         bounds = bounds ? bounds.extend(spot) : L.latLngBounds(spot, spot);
       }
