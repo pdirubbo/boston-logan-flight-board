@@ -148,7 +148,14 @@ function clockOnly(unix: number) {
   return unix ? etLabel(unix).t : "";
 }
 
-type FaaHit = { fn: string; from: string; eta: string; when: string; kind: Flight["inboundEtaKind"]; equip: string };
+type FaaHit = { fn: string; from: string; eta: string; when: string; kind: Flight["inboundEtaKind"]; equip: string; edct: string };
+
+function faaEdct(etd: string, eta: string): string {
+  const dep = etd.toUpperCase().match(/^([A-Z])(\d{2})\/(\d{2})(\d{2})$/);
+  const arr = eta.toUpperCase().match(/^([A-Z])/);
+  if (!dep || arr?.[1] !== "C" || !"PTM".includes(dep[1])) return "";
+  return `${dep[3]}${dep[4]}Z`;
+}
 
 function faaMoment(token: string, year: number, month: number, anchorDay: number): { when: string; eta: string; kind: Flight["inboundEtaKind"] } | null {
   const match = token.toUpperCase().match(/^([A-Z])(\d{2})\/(\d{2})(\d{2})$/);
@@ -182,7 +189,7 @@ async function loadFaaInbound(apt: string): Promise<Map<string, FaaHit[]>> {
       year?: string;
       month?: string;
       day?: string;
-      timeBuckets?: { flights?: { acid?: string; origin?: string; eta?: string; type?: string }[] }[];
+      timeBuckets?: { flights?: { acid?: string; origin?: string; eta?: string; etd?: string; type?: string }[] }[];
     };
     const year = Number(parsed.year) || new Date().getUTCFullYear();
     const month = Number(parsed.month) || new Date().getUTCMonth() + 1;
@@ -192,7 +199,15 @@ async function loadFaaInbound(apt: string): Promise<Map<string, FaaHit[]>> {
         const timed = faaMoment(row.eta ?? "", year, month, anchorDay);
         const fn = iataFlight(row.acid ?? "");
         if (!timed || !fn) continue;
-        const hit: FaaHit = { fn, from: (row.origin ?? "").toUpperCase(), eta: timed.eta, when: timed.when, kind: timed.kind, equip: (row.type ?? "").toUpperCase() };
+        const hit: FaaHit = {
+          fn,
+          from: (row.origin ?? "").toUpperCase(),
+          eta: timed.eta,
+          when: timed.when,
+          kind: timed.kind,
+          equip: (row.type ?? "").toUpperCase(),
+          edct: faaEdct(row.etd ?? "", row.eta ?? ""),
+        };
         const list = byFn.get(fn) ?? [];
         list.push(hit);
         byFn.set(fn, list);
@@ -233,6 +248,21 @@ function applyFaaInbound(flights: Flight[], arrivals: Arrival[], routings: Routi
     row.eta = hit.eta;
     row.inboundWhen = hit.when;
   }
+}
+
+function edctsFromFeed(flights: Flight[], arrivals: Arrival[], byFn: Map<string, FaaHit[]>): Record<string, string> {
+  const edcts: Record<string, string> = {};
+  const put = (fn: string, from: string) => {
+    const hit = pickFaa(byFn, fn, from);
+    if (!hit?.edct) return;
+    edcts[`${fn}|${from}`] = hit.edct;
+  };
+  for (const row of arrivals) put(row.fn, row.from);
+  for (const flight of flights) {
+    put(flight.inbound, flight.inboundFrom);
+    flight.inboundEdct = edcts[`${flight.inbound}|${flight.inboundFrom}`] ?? flight.inboundEdct;
+  }
+  return edcts;
 }
 
 function partnerOf(fn: string) {
@@ -1071,7 +1101,7 @@ async function buildSnapshot(apt: BoardCode): Promise<Snapshot> {
     routings.sort((a, b) => a.sort.localeCompare(b.sort));
     shareBoard(flights, arrivals, routings);
     applyFaaInbound(flights, arrivals, routings, faa);
-    const edcts = await pullEdcts(flights, arrivals);
+    const edcts = edctsFromFeed(flights, arrivals, faa);
     const held = readCache(apt, 18 * 3600_000, 25);
     const data: Snapshot = {
       pulled: now.toISOString(),
