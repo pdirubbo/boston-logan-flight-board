@@ -190,7 +190,7 @@ const html = `<!doctype html>
       <div class="scroll"><table><thead id="head"></thead><tbody id="body"></tbody></table></div>
     </section>
   </div>
-  <footer>Pull now loads the live schedule. Otherwise this copy rebuilds every 10 minutes. Last pull <span id="pulled"></span>. <span id="pull-note"></span></footer>
+  <footer>Pull now loads the live schedule. Otherwise this copy rebuilds every 5 minutes. Last pull <span id="pulled"></span>. <span id="pull-note"></span></footer>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>const DATA = ${payload};</script>
   <script>
@@ -431,7 +431,17 @@ const html = `<!doctype html>
     choices();
     bootMap();
     draw();
-    setInterval(() => location.reload(), 10 * 60 * 1000);
+    const every = 5 * 60 * 1000;
+    let marked = Date.now();
+    function tick() {
+      if (Date.now() - marked < every) return;
+      marked = Date.now();
+      const url = new URL(location.href);
+      url.searchParams.set("t", String(Date.now()));
+      location.replace(url.toString());
+    }
+    setInterval(tick, 30 * 1000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
   </script>
 </body>
 </html>

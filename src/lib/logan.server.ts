@@ -1013,7 +1013,7 @@ async function buildSnapshot(apt: BoardCode): Promise<Snapshot> {
 
 export async function loadSnapshot(apt: BoardCode = "BOS", force = false): Promise<Snapshot> {
   if (!force) {
-    const fresh = readCache(apt, 10 * 60_000, 25, false);
+    const fresh = readCache(apt, 5 * 60_000, 25, false);
     if (fresh?.routings?.some((row) => row.outbound)) return fresh;
   }
   return buildSnapshot(apt);

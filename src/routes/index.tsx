@@ -99,9 +99,18 @@ function Home() {
   useEffect(() => {
     const age = Date.now() - Date.parse(initial.pulled);
     const hasTurn = (initial.routings ?? []).some((row) => row.outbound);
-    if (!hasTurn || age > 10 * 60_000) void reload();
-    const timer = window.setInterval(() => void reload(), 10 * 60 * 1000);
-    return () => window.clearInterval(timer);
+    if (!hasTurn || age > 5 * 60_000) void reload(true);
+    const timer = window.setInterval(() => void reload(true), 5 * 60 * 1000);
+    const onShow = () => {
+      if (document.visibilityState !== "visible") return;
+      const age = Date.now() - Date.parse(dataRef.current?.pulled ?? "");
+      if (age > 5 * 60_000) void reload(true);
+    };
+    document.addEventListener("visibilitychange", onShow);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onShow);
+    };
     // The board reloads itself on a timer; the button calls reload directly.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
