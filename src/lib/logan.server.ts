@@ -12,7 +12,7 @@ import {
   type Program,
   type Routing,
   type Snapshot,
-} from "./flights";
+} from "./flights.ts";
 
 const UA = "Mozilla/5.0 LoganBoard/1.0";
 const BROWSER =

@@ -412,7 +412,7 @@ function Home() {
                   setSelected(id);
                   setCraft(null);
                   void rememberEdct(row.fn, row.from, row.op);
-                  const enroute = Boolean(row.tail) && row.st !== "Landed" && row.st !== "Cancelled" && row.st !== "Diverted" && (row.live || row.st === "Estimated" || row.st === "Airborne");
+                  const enroute = Boolean(row.tail) && row.st !== "Landed" && row.st !== "Cancelled" && row.st !== "Diverted" && (row.live || row.st === "Estimated");
                   if (!enroute) return;
                   void locate({ data: { tail: row.tail } }).then((fix) => {
                     if (!fix) return;
