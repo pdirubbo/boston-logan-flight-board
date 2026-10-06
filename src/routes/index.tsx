@@ -264,6 +264,15 @@ function Home() {
 
   async function choose(flight: Flight) {
     setSelected(`${flight.fn}|${flight.t}`);
+    setCraft(null);
+    if (flight.st === "Departed" && flight.tail) {
+      void locate({ data: { tail: flight.tail } })
+        .then((fix) => {
+          if (!fix) return;
+          setCraft({ lat: fix.lat, lon: fix.lon, label: `${flight.fn} ${flight.tail}${fix.alt ? ` · ${fix.alt}` : ""}` });
+        })
+        .catch(() => undefined);
+    }
     if (flight.tail || flight.inbound) return;
     const id = `${flight.fn}|${flight.iso}`;
     setLinking(id);

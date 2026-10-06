@@ -110,16 +110,21 @@ export async function aircraftFix(tail: string): Promise<{ lat: number; lon: num
   const hit = fixes.get(key);
   if (hit && Date.now() - hit.at < 60_000) return hit.value;
   let value: { lat: number; lon: number; alt: string } | null = null;
-  try {
-    const text = await getText(`https://api.adsb.lol/v2/reg/${encodeURIComponent(key)}`, BROWSER, 6000, "https://adsb.lol/");
-    const parsed = JSON.parse(text) as { ac?: { lat?: number; lon?: number; alt_baro?: number | string }[] };
-    const ac = (parsed.ac ?? []).find((row) => Number.isFinite(row.lat) && Number.isFinite(row.lon));
-    if (ac && typeof ac.lat === "number" && typeof ac.lon === "number") {
-      const alt = ac.alt_baro == null || ac.alt_baro === "ground" ? "" : `${ac.alt_baro} ft`;
-      value = { lat: ac.lat, lon: ac.lon, alt };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const text = await getText(`https://api.adsb.lol/v2/reg/${encodeURIComponent(key)}`, BROWSER, 8000, "https://adsb.lol/");
+      const parsed = JSON.parse(text) as { ac?: { lat?: number; lon?: number; alt_baro?: number | string }[] };
+      const ac = (parsed.ac ?? []).find((row) => Number.isFinite(row.lat) && Number.isFinite(row.lon));
+      if (ac && typeof ac.lat === "number" && typeof ac.lon === "number") {
+        const alt = ac.alt_baro == null || ac.alt_baro === "ground" ? "" : `${ac.alt_baro} ft`;
+        value = { lat: ac.lat, lon: ac.lon, alt };
+      }
+      break;
+    } catch (error) {
+      const retry = attempt < 2 && String(error).includes("429");
+      if (!retry) break;
+      await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
     }
-  } catch {
-    value = null;
   }
   fixes.set(key, { at: Date.now(), value });
   return value;

@@ -22,36 +22,66 @@ if (!data?.flights || data.flights.length < 25) {
   process.exit(1);
 }
 
-async function attachFixes(rows) {
-  const wanted = rows.filter((row) => row.tail && row.st !== "Landed" && row.st !== "Cancelled" && row.st !== "Diverted" && (row.live || row.st === "Estimated" || row.st === "Airborne")).slice(0, 40);
-  let index = 0;
-  async function run() {
-    while (index < wanted.length) {
-      const row = wanted[index++];
-      try {
-        const response = await fetch(`https://api.adsb.lol/v2/reg/${encodeURIComponent(row.tail)}`, {
-          headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
-          signal: AbortSignal.timeout(6000),
-        });
-        if (response.status === 429) return;
-        if (!response.ok) continue;
-        const parsed = await response.json();
-        const ac = (parsed.ac ?? []).find((item) => Number.isFinite(item.lat) && Number.isFinite(item.lon));
-        if (!ac) continue;
-        row.fix = {
-          lat: ac.lat,
-          lon: ac.lon,
-          alt: ac.alt_baro == null || ac.alt_baro === "ground" ? "" : `${ac.alt_baro} ft`,
-        };
-      } catch {
-        // A missing fix just leaves the route line.
-      }
+async function adsbFix(tail) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const response = await fetch(`https://api.adsb.lol/v2/reg/${encodeURIComponent(tail)}`, {
+      headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (response.status === 429) {
+      await new Promise((resolve) => setTimeout(resolve, 2000 * (attempt + 1)));
+      continue;
     }
+    if (!response.ok) return null;
+    const parsed = await response.json();
+    const ac = (parsed.ac ?? []).find((item) => Number.isFinite(item.lat) && Number.isFinite(item.lon));
+    if (!ac) return null;
+    return {
+      lat: ac.lat,
+      lon: ac.lon,
+      alt: ac.alt_baro == null || ac.alt_baro === "ground" ? "" : `${ac.alt_baro} ft`,
+    };
   }
-  await Promise.all([run(), run(), run()]);
+  return null;
 }
 
-await attachFixes(data.arrivals ?? []);
+function enroute(row, kind) {
+  if (!row?.tail) return false;
+  if (row.st === "Landed" || row.st === "Cancelled" || row.st === "Diverted") return false;
+  if (kind === "dep") return row.st === "Departed";
+  return Boolean(row.live || row.st === "Estimated" || row.st === "Airborne");
+}
+
+async function attachFixes(rows) {
+  const seen = new Set();
+  let found = 0;
+  for (const row of rows) {
+    if (!row.tail || seen.has(row.tail)) continue;
+    seen.add(row.tail);
+    try {
+      const fix = await adsbFix(row.tail);
+      if (!fix) continue;
+      found += 1;
+      for (const other of rows) {
+        if (other.tail === row.tail) other.fix = fix;
+      }
+    } catch {
+      // A missing fix just leaves the route line.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  }
+  console.log(`ADS-B positions: ${found} of ${seen.size} enroute tails`);
+}
+
+const tracked = [
+  ...(data.arrivals ?? []).filter((row) => enroute(row, "arr")),
+  ...(data.flights ?? []).filter((row) => enroute(row, "dep")),
+];
+await attachFixes(tracked);
+const fixByTail = new Map(tracked.filter((row) => row.fix).map((row) => [row.tail, row.fix]));
+for (const row of data.routings ?? []) {
+  if (row.tail && fixByTail.has(row.tail)) row.fix = fixByTail.get(row.tail);
+}
 
 const used = new Set(["BOS"]);
 for (const flight of data.flights) used.add(flight.to);
@@ -286,6 +316,11 @@ const html = `<!doctype html>
       }
       return pts;
     }
+    function selectedRow() {
+      if (tab === "arr") return arrivals.find((item) => "arr|" + item.fn + "|" + item.t === selected) || null;
+      if (tab === "lard") return routings.find((item) => item.id === selected) || null;
+      return flights.find((item) => item.fn + "|" + item.t === selected) || null;
+    }
     function drawMap(list) {
       if (!map) return;
       routes.clearLayers();
@@ -304,15 +339,18 @@ const html = `<!doctype html>
         const line = L.polyline(leg.into ? arc([place[1], place[2]], DATA.bos) : arc(DATA.bos, [place[1], place[2]]), { color: hot.length ? "#c4512c" : "#0e3a5d", weight: hot.length ? 3 : 1.2, opacity: hot.length ? 0.9 : 0.28 }).addTo(routes);
         bounds = bounds ? bounds.extend(line.getBounds()) : line.getBounds();
       }
-      if (tab === "arr" && selected) {
-        const row = arrivals.find((item) => "arr|" + item.fn + "|" + item.t === selected);
-        if (row && row.fix) {
-          L.circleMarker([row.fix.lat, row.fix.lon], { radius: 8, color: "#c4512c", weight: 3, fillColor: "#14202b", fillOpacity: 1 }).addTo(routes).bindPopup("<b>" + esc(row.fn + " " + (row.tail || "") + (row.fix.alt ? " · " + row.fix.alt : "")) + "</b>");
-          const spot = L.latLng(row.fix.lat, row.fix.lon);
-          bounds = bounds ? bounds.extend(spot) : L.latLngBounds(spot, spot);
-        }
+      const row = selected ? selectedRow() : null;
+      const airborne = row && row.tail && row.st !== "Landed" && row.st !== "Cancelled" && (row.live || row.st === "Departed" || row.st === "Estimated" || row.outboundKind === "Departed");
+      if (row && row.fix) {
+        const label = (row.fn || row.outbound || row.inbound || "Aircraft") + " " + (row.tail || "") + (row.fix.alt ? " · " + row.fix.alt : "");
+        const marker = L.circleMarker([row.fix.lat, row.fix.lon], { radius: 9, color: "#c4512c", weight: 3, fillColor: "#14202b", fillOpacity: 1 }).addTo(routes);
+        marker.bindPopup("<b>" + esc(label) + "</b><div>ADS-B from the last pull</div>").openPopup();
+        const spot = L.latLng(row.fix.lat, row.fix.lon);
+        bounds = bounds ? bounds.extend(spot) : L.latLngBounds(spot, spot);
       }
-      if (bounds && bounds.isValid()) map.fitBounds(bounds.pad(0.2), { maxZoom: 5 });
+      const note = $("pull-note");
+      if (airborne && row && !row.fix && note && !note.textContent.startsWith("Pull")) note.textContent = "No current ADS-B position for " + row.tail + ".";
+      if (bounds && bounds.isValid()) map.fitBounds(bounds.pad(0.2), { maxZoom: selected && row && row.fix ? 6 : 5 });
     }
     async function pullNow() {
       const button = $("pull");
@@ -370,15 +408,6 @@ const html = `<!doctype html>
       if (!tr) return;
       selected = tr.dataset.id || "";
       draw();
-      if (tab !== "arr") return;
-      const row = arrivals.find((item) => "arr|" + item.fn + "|" + item.t === selected);
-      if (!row || !row.tail || row.st === "Landed" || row.st === "Cancelled" || row.st === "Diverted" || !(row.live || row.st === "Estimated" || row.st === "Airborne")) return;
-      fetch("https://api.adsb.lol/v2/reg/" + encodeURIComponent(row.tail)).then((response) => response.ok ? response.json() : null).then((json) => {
-        const ac = json && (json.ac || []).find((item) => Number.isFinite(item.lat) && Number.isFinite(item.lon));
-        if (!ac) return;
-        row.fix = { lat: ac.lat, lon: ac.lon, alt: ac.alt_baro && ac.alt_baro !== "ground" ? ac.alt_baro + " ft" : "" };
-        if (selected === "arr|" + row.fn + "|" + row.t) draw();
-      }).catch(() => undefined);
     });
     document.body.addEventListener("error", (event) => {
       const img = event.target;
