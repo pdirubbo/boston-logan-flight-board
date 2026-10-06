@@ -27,7 +27,7 @@ export type Flight = {
   inboundStatus: string;
   inboundOp: string;
   inboundEdct: string;
-  inboundEtaKind: "" | "Published" | "ETA" | "Arrived";
+  inboundEtaKind: "" | "Published" | "ETA" | "Arrived" | "FAA";
   tail: string;
   etd: string;
   equip: string;

@@ -148,6 +148,93 @@ function clockOnly(unix: number) {
   return unix ? etLabel(unix).t : "";
 }
 
+type FaaHit = { fn: string; from: string; eta: string; when: string; kind: Flight["inboundEtaKind"]; equip: string };
+
+function faaMoment(token: string, year: number, month: number, anchorDay: number): { when: string; eta: string; kind: Flight["inboundEtaKind"] } | null {
+  const match = token.toUpperCase().match(/^([A-Z])(\d{2})\/(\d{2})(\d{2})$/);
+  if (!match || (match[1] !== "E" && match[1] !== "A" && match[1] !== "C")) return null;
+  let day = Number(match[2]);
+  let mon = month;
+  let yr = year;
+  if (anchorDay >= 28 && day < 5) {
+    mon += 1;
+    if (mon > 12) {
+      mon = 1;
+      yr += 1;
+    }
+  }
+  const when = etLabel(Date.UTC(yr, mon - 1, day, Number(match[3]), Number(match[4])) / 1000);
+  if (!when.t) return null;
+  return { when: `${when.date} ${when.t}`, eta: when.t, kind: match[1] === "A" ? "Arrived" : match[1] === "C" ? "FAA" : "ETA" };
+}
+
+function samePlace(faa: string, ours: string) {
+  const left = faa.toUpperCase();
+  const right = ours.toUpperCase();
+  return left === right || (left.length === 4 && left.slice(1) === right);
+}
+
+async function loadFaaInbound(apt: string): Promise<Map<string, FaaHit[]>> {
+  const byFn = new Map<string, FaaHit[]>();
+  try {
+    const text = await getText(`https://www.fly.faa.gov/aadc/api/airports/${apt}`, BROWSER, 12000, "https://www.fly.faa.gov/aadc/");
+    const parsed = JSON.parse(text) as {
+      year?: string;
+      month?: string;
+      day?: string;
+      timeBuckets?: { flights?: { acid?: string; origin?: string; eta?: string; type?: string }[] }[];
+    };
+    const year = Number(parsed.year) || new Date().getUTCFullYear();
+    const month = Number(parsed.month) || new Date().getUTCMonth() + 1;
+    const anchorDay = Number(parsed.day) || new Date().getUTCDate();
+    for (const bucket of parsed.timeBuckets ?? []) {
+      for (const row of bucket.flights ?? []) {
+        const timed = faaMoment(row.eta ?? "", year, month, anchorDay);
+        const fn = iataFlight(row.acid ?? "");
+        if (!timed || !fn) continue;
+        const hit: FaaHit = { fn, from: (row.origin ?? "").toUpperCase(), eta: timed.eta, when: timed.when, kind: timed.kind, equip: (row.type ?? "").toUpperCase() };
+        const list = byFn.get(fn) ?? [];
+        list.push(hit);
+        byFn.set(fn, list);
+      }
+    }
+  } catch {
+    // The board still has the schedule inbound if the FAA feed misses.
+  }
+  return byFn;
+}
+
+function pickFaa(byFn: Map<string, FaaHit[]>, fn: string, from: string) {
+  const list = byFn.get(fn) ?? [];
+  if (!list.length) return undefined;
+  const exact = from ? list.filter((row) => samePlace(row.from, from)) : [];
+  return exact[0] ?? (list.length === 1 ? list[0] : undefined);
+}
+
+function applyFaaInbound(flights: Flight[], arrivals: Arrival[], routings: Routing[], byFn: Map<string, FaaHit[]>) {
+  for (const row of arrivals) {
+    const hit = pickFaa(byFn, row.fn, row.from);
+    if (!hit || row.st === "Landed" || (row.live && hit.kind !== "Arrived")) continue;
+    row.eta = hit.eta;
+    if (!row.equip && hit.equip) row.equip = hit.equip;
+  }
+  for (const flight of flights) {
+    if (!flight.inbound || flight.inboundEtaKind === "ETA" || flight.inboundEtaKind === "Arrived") continue;
+    const hit = pickFaa(byFn, flight.inbound, flight.inboundFrom);
+    if (!hit) continue;
+    flight.inboundEta = hit.when;
+    flight.inboundEtaKind = hit.kind;
+    if (!flight.inboundFrom && hit.from.length === 3) flight.inboundFrom = hit.from;
+  }
+  for (const row of routings) {
+    if (!row.inbound || row.inboundKind === "Landed" || row.inboundKind === "Estimated") continue;
+    const hit = pickFaa(byFn, row.inbound, row.inboundFrom);
+    if (!hit) continue;
+    row.eta = hit.eta;
+    row.inboundWhen = hit.when;
+  }
+}
+
 function partnerOf(fn: string) {
   const code = fn.toUpperCase().match(/^([A-Z0-9]{2})\d+$/)?.[1] ?? "";
   return code ? airlineCode(code) : "";
@@ -942,9 +1029,10 @@ async function buildSnapshot(apt: BoardCode): Promise<Snapshot> {
   let arrivals: Arrival[] = [];
   let routings: Routing[] = [];
   try {
-    const [{ depLegs, arrLegs }, nas] = await Promise.all([
+    const [{ depLegs, arrLegs }, nas, faa] = await Promise.all([
       collectLegs(apt, now),
       getText("https://nasstatus.faa.gov/api/airport-status-information", UA, 8000).catch(() => ""),
+      loadFaaInbound(apt),
     ]);
     stampKnownTails(depLegs, arrLegs);
     await Promise.all([enrichLegs(depLegs, "departure", nowSec), enrichLegs(arrLegs, "arrival", nowSec)]);
@@ -982,6 +1070,7 @@ async function buildSnapshot(apt: BoardCode): Promise<Snapshot> {
     }
     routings.sort((a, b) => a.sort.localeCompare(b.sort));
     shareBoard(flights, arrivals, routings);
+    applyFaaInbound(flights, arrivals, routings, faa);
     const edcts = await pullEdcts(flights, arrivals);
     const held = readCache(apt, 18 * 3600_000, 25);
     const data: Snapshot = {
