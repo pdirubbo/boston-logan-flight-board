@@ -122,7 +122,8 @@ const html = `<!doctype html>
     .good { background: #e4edf4; color: var(--navy); }
     .wait { background: var(--line); color: var(--ink); }
     .logo { height: 20px; width: 48px; object-fit: contain; object-position: left; }
-    footer { padding: 8px 24px 16px; color: var(--mute); font-size: 12px; }
+    #pull { background: var(--navy); color: var(--paper); border: 0; font-weight: 700; }
+    #pull:disabled { opacity: 0.7; }
     #map { height: 100%; min-height: 320px; }
   </style>
 </head>
@@ -150,11 +151,12 @@ const html = `<!doctype html>
         <select id="span"><option value="">Any time</option><option value="1">Next hour</option><option value="3">Next 3 hours</option><option value="6">Next 6 hours</option></select>
         <select id="equip"><option value="">All aircraft</option></select>
         <select id="place"><option value="">All destinations</option></select>
+        <button type="button" id="pull">Pull now</button>
       </div>
       <div class="scroll"><table><thead id="head"></thead><tbody id="body"></tbody></table></div>
     </section>
   </div>
-  <footer>Refreshed from the live schedule every 10 minutes. This copy was pulled <span id="pulled"></span>.</footer>
+  <footer>Pull now loads the live schedule. Otherwise this copy rebuilds every 10 minutes. Last pull <span id="pulled"></span>. <span id="pull-note"></span></footer>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>const DATA = ${payload};</script>
   <script>
@@ -183,9 +185,9 @@ const html = `<!doctype html>
       return '<span class="pill ' + kind + '">' + esc(detail || st || "—") + "</span>";
     };
     const esc = (s) => String(s ?? "").replace(/&/g, "&\u0061mp;").replace(/</g, "&\u006ct;").replace(/>/g, "&\u0067t;").replace(/"/g, "&\u0071uot;");
-    const flights = (DATA.flights || []).filter((f) => within(f.iso));
-    const arrivals = (DATA.arrivals || []).filter((f) => within(f.iso));
-    const routings = (DATA.routings || []).filter((f) => within(f.outboundIso || f.inboundIso));
+    let flights = (DATA.flights || []).filter((f) => within(f.iso));
+    let arrivals = (DATA.arrivals || []).filter((f) => within(f.iso));
+    let routings = (DATA.routings || []).filter((f) => within(f.outboundIso || f.inboundIso));
     function fill(select, values, all) {
       const current = select.value;
       select.innerHTML = '<option value="">' + all + "</option>" + values.map((v) => '<option>' + esc(v) + "</option>").join("");
@@ -312,10 +314,56 @@ const html = `<!doctype html>
       }
       if (bounds && bounds.isValid()) map.fitBounds(bounds.pad(0.2), { maxZoom: 5 });
     }
+    async function pullNow() {
+      const button = $("pull");
+      const note = $("pull-note");
+      const runPage = window.open("https://github.com/pdirubbo/boston-logan-flight-board/actions/workflows/pages.yml", "_blank", "noopener");
+      button.disabled = true;
+      button.textContent = "Pulling…";
+      note.innerHTML = 'Confirm <a href="https://github.com/pdirubbo/boston-logan-flight-board/actions/workflows/pages.yml" target="_blank" rel="noopener">Run workflow</a> on GitHub. This board reloads when the new schedule is up.';
+      let before = "";
+      try {
+        const head = await fetch("https://api.github.com/repos/pdirubbo/boston-logan-flight-board/commits/gh-pages", { headers: { Accept: "application/vnd.github+json" } });
+        const json = await head.json();
+        before = json.sha || "";
+      } catch (error) {
+        before = "";
+      }
+      const started = Date.now();
+      const timer = setInterval(async () => {
+        if (Date.now() - started > 8 * 60 * 1000) {
+          clearInterval(timer);
+          note.textContent = "The pull is taking longer than usual. The last board is still up.";
+          button.disabled = false;
+          button.textContent = "Pull now";
+          return;
+        }
+        try {
+          const head = await fetch("https://api.github.com/repos/pdirubbo/boston-logan-flight-board/commits/gh-pages?t=" + Date.now(), { headers: { Accept: "application/vnd.github+json" } });
+          const json = await head.json();
+          if (json.sha && before && json.sha !== before) {
+            clearInterval(timer);
+            location.reload();
+          }
+        } catch (error) {}
+      }, 15000);
+      try {
+        const response = await fetch("https://api.github.com/repos/pdirubbo/boston-logan-flight-board/actions/workflows/pages.yml/dispatches", {
+          method: "POST",
+          headers: { Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+          body: JSON.stringify({ ref: "main" }),
+        });
+        if (response.status === 204) {
+          if (runPage) runPage.close();
+          note.textContent = "Pulling the live schedule. This page will reload when it is ready.";
+        }
+      } catch (error) {}
+    }
     function setTab(next) { tab = next; selected = ""; choices(); draw(); }
     $("tab-dep").onclick = () => setTab("dep");
     $("tab-arr").onclick = () => setTab("arr");
     $("tab-lard").onclick = () => setTab("lard");
+    $("pull").onclick = () => void pullNow();
     for (const id of ["q", "status", "airline", "span", "equip", "place"]) $(id).addEventListener("input", draw);
     $("body").addEventListener("click", (event) => {
       const tr = event.target.closest("tr");

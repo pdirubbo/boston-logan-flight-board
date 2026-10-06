@@ -388,7 +388,7 @@ function Home() {
               className="inline-flex min-h-11 items-center gap-2 rounded-full bg-navy px-4 text-sm font-semibold text-paper"
             >
               <RefreshCw className={`size-4 ${busy ? "animate-spin" : ""}`} />
-              Refresh
+              Pull now
             </button>
           </div>
           <div className="min-h-0 flex-1 overflow-auto">
