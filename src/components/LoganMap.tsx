@@ -8,7 +8,13 @@ export type MapLeg = {
   into: boolean;
 };
 
-export type Craft = { lat: number; lon: number; label: string };
+export type Craft = {
+  lat: number;
+  lon: number;
+  label: string;
+  track?: number;
+  plan?: { from: string; to: string; a: [number, number]; b: [number, number] } | null;
+};
 
 type Props = {
   legs: MapLeg[];
@@ -80,16 +86,32 @@ export function LoganMap({ legs, selected, craft = null, home = BOS, code = "BOS
         }).addTo(routes);
         focus = focus ? focus.extend(line.getBounds()) : line.getBounds();
       }
-      if (craft) {
-        L.circleMarker([craft.lat, craft.lon], {
-          radius: 8,
-          color: "#c4512c",
+      if (craft?.plan) {
+        const route = L.polyline(gc(craft.plan.a, craft.plan.b), {
+          color: "#14202b",
           weight: 3,
-          fillColor: "#14202b",
-          fillOpacity: 1,
-        })
+          opacity: 0.9,
+          dashArray: "7 6",
+        }).addTo(routes);
+        L.circleMarker(craft.plan.a, { radius: 4, color: "#14202b", fillColor: "#f4efe4", fillOpacity: 1, weight: 2 })
           .addTo(routes)
-          .bindPopup(`<b>${craft.label.replace(/[&<>]/g, "")}</b>`);
+          .bindTooltip(craft.plan.from || "Origin", { permanent: true, direction: "right" });
+        L.circleMarker(craft.plan.b, { radius: 4, color: "#14202b", fillColor: "#f4efe4", fillOpacity: 1, weight: 2 })
+          .addTo(routes)
+          .bindTooltip(craft.plan.to || "Destination", { permanent: true, direction: "left" });
+        focus = focus ? focus.extend(route.getBounds()) : route.getBounds();
+      }
+      if (craft) {
+        const icon = L.divIcon({
+          className: "plane-pin",
+          html: `<svg width="28" height="28" viewBox="0 0 28 28" style="transform:rotate(${Number(craft.track) || 0}deg)"><path d="M14 1.5 L16.2 10.5 L26 13.2 L16.2 15 L15.2 22 L18 26 L14 23.2 L10 26 L12.8 22 L11.8 15 L2 13.2 L11.8 10.5 Z" fill="#14202b" stroke="#c4512c" stroke-width="1.2" stroke-linejoin="round"/></svg>`,
+          iconSize: [28, 28],
+          iconAnchor: [14, 14],
+        });
+        const plan = craft.plan ? `${craft.plan.from}–${craft.plan.to}` : "";
+        L.marker([craft.lat, craft.lon], { icon, zIndexOffset: 800 })
+          .addTo(routes)
+          .bindPopup(`<b>${craft.label.replace(/[&<>]/g, "")}</b>${plan ? `<div>Flight plan ${plan.replace(/[&<>]/g, "")}</div>` : ""}`);
         const spot = L.latLng(craft.lat, craft.lon);
         focus = focus ? focus.extend(spot) : L.latLngBounds(spot, spot);
       }

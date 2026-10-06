@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Plane, Radio, RefreshCw } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { LoganMap, type MapLeg } from "@/components/LoganMap";
+import { LoganMap, type Craft, type MapLeg } from "@/components/LoganMap";
 import {
   BOS,
   airlineCode,
@@ -60,7 +60,7 @@ function Home() {
   const [place, setPlace] = useState("");
   const [edctFirst, setEdctFirst] = useState(false);
   const [selected, setSelected] = useState("");
-  const [craft, setCraft] = useState<{ lat: number; lon: number; label: string } | null>(null);
+  const [craft, setCraft] = useState<Craft | null>(null);
   const [busy, setBusy] = useState(false);
   const [edcts, setEdcts] = useState<Record<string, string>>(initial.edcts ?? {});
   const [checking, setChecking] = useState("");
@@ -269,7 +269,13 @@ function Home() {
       void locate({ data: { tail: flight.tail } })
         .then((fix) => {
           if (!fix) return;
-          setCraft({ lat: fix.lat, lon: fix.lon, label: `${flight.fn} ${flight.tail}${fix.alt ? ` · ${fix.alt}` : ""}` });
+          setCraft({
+            lat: fix.lat,
+            lon: fix.lon,
+            track: fix.track,
+            plan: fix.plan,
+            label: `${flight.fn} ${flight.tail}${fix.alt ? ` · ${fix.alt}` : ""}`,
+          });
         })
         .catch(() => undefined);
     }
@@ -425,7 +431,13 @@ function Home() {
                   if (!enroute) return;
                   void locate({ data: { tail: row.tail } }).then((fix) => {
                     if (!fix) return;
-                    setCraft({ lat: fix.lat, lon: fix.lon, label: `${row.fn} ${row.tail}${fix.alt ? ` · ${fix.alt}` : ""}` });
+                    setCraft({
+                      lat: fix.lat,
+                      lon: fix.lon,
+                      track: fix.track,
+                      plan: fix.plan,
+                      label: `${row.fn} ${row.tail}${fix.alt ? ` · ${fix.alt}` : ""}`,
+                    });
                   }).catch(() => undefined);
                 }}
               />
@@ -640,15 +652,20 @@ function AirlineMark({ code }: { code: string }) {
   const [failed, setFailed] = useState(false);
   if (!code) return null;
   if (failed) return <span className="font-semibold">{code}</span>;
+  const shield = code === "UPS" || code === "5X";
   return (
     <img
-      src={`https://pics.avs.io/120/36/${code}.png`}
-      alt={code}
-      title={code}
-      width={72}
-      height={22}
+      src={
+        shield
+          ? "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/United_Parcel_Service_logo_2014.svg/250px-United_Parcel_Service_logo_2014.svg.png"
+          : `https://pics.avs.io/120/36/${code}.png`
+      }
+      alt={shield ? "UPS" : code}
+      title={shield ? "UPS" : code}
+      width={shield ? 18 : 72}
+      height={shield ? 22 : 22}
       referrerPolicy="no-referrer"
-      className="h-5 w-12 object-contain object-left"
+      className={shield ? "h-[22px] w-[18px] object-contain" : "h-5 w-12 object-contain object-left"}
       onError={() => setFailed(true)}
     />
   );

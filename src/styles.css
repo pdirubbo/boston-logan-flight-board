@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+.plane-pin {
+  background: none !important;
+  border: none !important;
+}
+
+
 @theme {
   --color-paper: #f4efe6;
   --color-card: #fffdf8;

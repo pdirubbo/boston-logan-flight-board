@@ -103,21 +103,45 @@ async function getText(url: string, ua = UA, ms = 12000, referer = "https://www.
   return response.text();
 }
 
-const fixes = new Map<string, { at: number; value: { lat: number; lon: number; alt: string } | null }>();
+const fixes = new Map<string, { at: number; value: { lat: number; lon: number; alt: string; track: number; plan: { from: string; to: string; a: [number, number]; b: [number, number] } | null } | null }>();
 
-export async function aircraftFix(tail: string): Promise<{ lat: number; lon: number; alt: string } | null> {
+async function filedPlan(call: string): Promise<{ from: string; to: string; a: [number, number]; b: [number, number] } | null> {
+  const key = call.trim();
+  if (!key) return null;
+  try {
+    const text = await getText(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(key)}`, BROWSER, 8000);
+    const parsed = JSON.parse(text) as {
+      response?: { flightroute?: { origin?: { iata_code?: string; icao_code?: string; latitude?: number; longitude?: number }; destination?: { iata_code?: string; icao_code?: string; latitude?: number; longitude?: number } } };
+    };
+    const origin = parsed.response?.flightroute?.origin;
+    const dest = parsed.response?.flightroute?.destination;
+    if (typeof origin?.latitude !== "number" || typeof dest?.latitude !== "number" || typeof origin.longitude !== "number" || typeof dest.longitude !== "number") return null;
+    return {
+      from: origin.iata_code || origin.icao_code || "",
+      to: dest.iata_code || dest.icao_code || "",
+      a: [origin.latitude, origin.longitude],
+      b: [dest.latitude, dest.longitude],
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function aircraftFix(tail: string): Promise<{ lat: number; lon: number; alt: string; track: number; plan: { from: string; to: string; a: [number, number]; b: [number, number] } | null } | null> {
   const key = tail.toUpperCase();
   const hit = fixes.get(key);
   if (hit && Date.now() - hit.at < 60_000) return hit.value;
-  let value: { lat: number; lon: number; alt: string } | null = null;
+  let value: { lat: number; lon: number; alt: string; track: number; plan: { from: string; to: string; a: [number, number]; b: [number, number] } | null } | null = null;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const text = await getText(`https://api.adsb.lol/v2/reg/${encodeURIComponent(key)}`, BROWSER, 8000, "https://adsb.lol/");
-      const parsed = JSON.parse(text) as { ac?: { lat?: number; lon?: number; alt_baro?: number | string }[] };
+      const parsed = JSON.parse(text) as { ac?: { lat?: number; lon?: number; alt_baro?: number | string; track?: number; nav_heading?: number; flight?: string }[] };
       const ac = (parsed.ac ?? []).find((row) => Number.isFinite(row.lat) && Number.isFinite(row.lon));
       if (ac && typeof ac.lat === "number" && typeof ac.lon === "number") {
         const alt = ac.alt_baro == null || ac.alt_baro === "ground" ? "" : `${ac.alt_baro} ft`;
-        value = { lat: ac.lat, lon: ac.lon, alt };
+        const track = Number.isFinite(ac.track) ? ac.track! : Number.isFinite(ac.nav_heading) ? ac.nav_heading! : 0;
+        const plan = await filedPlan(String(ac.flight || ""));
+        value = { lat: ac.lat, lon: ac.lon, alt, track, plan };
       }
       break;
     } catch (error) {
