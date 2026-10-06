@@ -12,3 +12,4 @@ dist
 .env.*
 *.log
 .project_id
+site
