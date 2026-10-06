@@ -23,7 +23,7 @@ jobs:
         with:
           node-version: 22
       - name: Pull the schedule and build the site
-        run: node --experimental-strip-types scripts/publish-pages.mjs
+        run: node --experimental-strip-types --import ./scripts/ts-resolve.mjs scripts/publish-pages.mjs
       - name: Publish to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
