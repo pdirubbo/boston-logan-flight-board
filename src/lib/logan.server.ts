@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import {
   AIRPORTS,
   BOARDS,
+  airlineCode,
   callsign,
   iataFlight,
   isNorthAmerica,
@@ -102,6 +103,28 @@ async function getText(url: string, ua = UA, ms = 12000, referer = "https://www.
   return response.text();
 }
 
+const fixes = new Map<string, { at: number; value: { lat: number; lon: number; alt: string } | null }>();
+
+export async function aircraftFix(tail: string): Promise<{ lat: number; lon: number; alt: string } | null> {
+  const key = tail.toUpperCase();
+  const hit = fixes.get(key);
+  if (hit && Date.now() - hit.at < 60_000) return hit.value;
+  let value: { lat: number; lon: number; alt: string } | null = null;
+  try {
+    const text = await getText(`https://api.adsb.lol/v2/reg/${encodeURIComponent(key)}`, BROWSER, 6000, "https://adsb.lol/");
+    const parsed = JSON.parse(text) as { ac?: { lat?: number; lon?: number; alt_baro?: number | string }[] };
+    const ac = (parsed.ac ?? []).find((row) => Number.isFinite(row.lat) && Number.isFinite(row.lon));
+    if (ac && typeof ac.lat === "number" && typeof ac.lon === "number") {
+      const alt = ac.alt_baro == null || ac.alt_baro === "ground" ? "" : `${ac.alt_baro} ft`;
+      value = { lat: ac.lat, lon: ac.lon, alt };
+    }
+  } catch {
+    value = null;
+  }
+  fixes.set(key, { at: Date.now(), value });
+  return value;
+}
+
 function etLabel(unix: number) {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "America/New_York",
@@ -120,7 +143,8 @@ function clockOnly(unix: number) {
 }
 
 function partnerOf(fn: string) {
-  return fn.toUpperCase().match(/^([A-Z0-9]{2})\d+$/)?.[1] ?? "";
+  const code = fn.toUpperCase().match(/^([A-Z0-9]{2})\d+$/)?.[1] ?? "";
+  return code ? airlineCode(code) : "";
 }
 
 function gdpOf(xml: string, code: string): Program | null {

@@ -5,6 +5,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { LoganMap, type MapLeg } from "@/components/LoganMap";
 import {
   BOS,
+  airlineCode,
   hasClock,
   isNorthAmerica,
   type Arrival,
@@ -13,7 +14,7 @@ import {
   type Routing,
   type Snapshot,
 } from "@/lib/flights";
-import { loadLogan, lookupInboundEdct, resolveInbound } from "@/lib/logan.functions";
+import { loadLogan, lookupAircraft, lookupInboundEdct, resolveInbound } from "@/lib/logan.functions";
 
 export const Route = createFileRoute("/")({
   loader: () => loadLogan({ data: { apt: "BOS" } }),
@@ -47,6 +48,7 @@ function Home() {
   const initial = Route.useLoaderData();
   const refresh = useServerFn(loadLogan);
   const lookup = useServerFn(lookupInboundEdct);
+  const locate = useServerFn(lookupAircraft);
   const linkTail = useServerFn(resolveInbound);
   const [data, setData] = useState<Snapshot>(initial);
   const [tab, setTab] = useState<Tab>("dep");
@@ -58,6 +60,7 @@ function Home() {
   const [place, setPlace] = useState("");
   const [edctFirst, setEdctFirst] = useState(false);
   const [selected, setSelected] = useState("");
+  const [craft, setCraft] = useState<{ lat: number; lon: number; label: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [edcts, setEdcts] = useState<Record<string, string>>(initial.edcts ?? {});
   const [checking, setChecking] = useState("");
@@ -311,14 +314,14 @@ function Home() {
       </header>
       <div className="grid flex-1 grid-cols-1 gap-3 px-3 pb-3 lg:min-h-0 lg:grid-cols-2 lg:overflow-hidden">
         <div className="h-80 overflow-hidden rounded-card border border-line bg-card lg:h-full">
-          <LoganMap legs={legs} selected={selected} home={BOS} code="BOS" place="Boston" />
+          <LoganMap legs={legs} selected={selected} craft={craft} home={BOS} code="BOS" place="Boston" />
         </div>
         <section className="flex h-96 min-h-0 flex-col overflow-hidden rounded-card border border-line bg-card lg:h-full">
           <div className="flex flex-wrap gap-2 border-b border-line p-3">
             <div className="flex rounded-full border border-line bg-paper p-1" role="tablist" aria-label="Board">
-              <TabButton active={tab === "dep"} onClick={() => setTab("dep")} label="Departures" count={remaining.length} />
-              <TabButton active={tab === "arr"} onClick={() => setTab("arr")} label="Arrivals" count={arrivals.length} />
-              <TabButton active={tab === "lard"} onClick={() => setTab("lard")} label="LARD" count={openRoutings.length} />
+              <TabButton active={tab === "dep"} onClick={() => { setCraft(null); setTab("dep"); }} label="Departures" count={remaining.length} />
+              <TabButton active={tab === "arr"} onClick={() => { setCraft(null); setTab("arr"); }} label="Arrivals" count={arrivals.length} />
+              <TabButton active={tab === "lard"} onClick={() => { setCraft(null); setTab("lard"); }} label="LARD" count={openRoutings.length} />
             </div>
             <input
               value={query}
@@ -405,8 +408,16 @@ function Home() {
                 edcts={edcts}
                 checking={checking}
                 onChoose={(row) => {
-                  setSelected(`arr|${row.fn}|${row.t}`);
+                  const id = `arr|${row.fn}|${row.t}`;
+                  setSelected(id);
+                  setCraft(null);
                   void rememberEdct(row.fn, row.from, row.op);
+                  const enroute = Boolean(row.tail) && row.st !== "Landed" && row.st !== "Cancelled" && row.st !== "Diverted" && (row.live || row.st === "Estimated" || row.st === "Airborne");
+                  if (!enroute) return;
+                  void locate({ data: { tail: row.tail } }).then((fix) => {
+                    if (!fix) return;
+                    setCraft({ lat: fix.lat, lon: fix.lon, label: `${row.fn} ${row.tail}${fix.alt ? ` · ${fix.alt}` : ""}` });
+                  }).catch(() => undefined);
                 }}
               />
             ) : null}
@@ -592,7 +603,8 @@ function ArrivalTable({
 }
 
 function carrierOf(fn: string): string {
-  return fn.toUpperCase().match(/^([A-Z0-9]{2})\d/)?.[1] ?? "";
+  const code = fn.toUpperCase().match(/^([A-Z0-9]{2})\d/)?.[1] ?? "";
+  return code ? airlineCode(code) : "";
 }
 
 function withinHours(iso: string, hours: string): boolean {
@@ -609,9 +621,10 @@ function flightNo(fn: string) {
 }
 
 function partnerCode(row: Routing) {
-  if (row.partner) return row.partner;
+  if (row.partner) return airlineCode(row.partner);
   const fn = row.outbound || row.inbound;
-  return fn.toUpperCase().match(/^([A-Z0-9]{2})\d+$/)?.[1] ?? "";
+  const code = fn.toUpperCase().match(/^([A-Z0-9]{2})\d+$/)?.[1] ?? "";
+  return code ? airlineCode(code) : "";
 }
 
 function AirlineMark({ code }: { code: string }) {

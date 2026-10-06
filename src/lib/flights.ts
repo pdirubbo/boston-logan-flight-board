@@ -251,9 +251,15 @@ const PREFIX: Record<string, string> = {
   NK: "NKS",
   F9: "FFT",
   SY: "SCX",
+  "5X": "UPS",
   WS: "WJA",
   TS: "TSC",
 };
+
+export function airlineCode(code: string): string {
+  const value = code.toUpperCase();
+  return value === "5X" ? "UPS" : value;
+}
 
 export function iataFlight(ident: string): string {
   const raw = ident.toUpperCase().replace(/\s+/g, "");

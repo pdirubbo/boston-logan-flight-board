@@ -22,6 +22,37 @@ if (!data?.flights || data.flights.length < 25) {
   process.exit(1);
 }
 
+async function attachFixes(rows) {
+  const wanted = rows.filter((row) => row.tail && row.st !== "Landed" && row.st !== "Cancelled" && row.st !== "Diverted" && (row.live || row.st === "Estimated" || row.st === "Airborne")).slice(0, 40);
+  let index = 0;
+  async function run() {
+    while (index < wanted.length) {
+      const row = wanted[index++];
+      try {
+        const response = await fetch(`https://api.adsb.lol/v2/reg/${encodeURIComponent(row.tail)}`, {
+          headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
+          signal: AbortSignal.timeout(6000),
+        });
+        if (response.status === 429) return;
+        if (!response.ok) continue;
+        const parsed = await response.json();
+        const ac = (parsed.ac ?? []).find((item) => Number.isFinite(item.lat) && Number.isFinite(item.lon));
+        if (!ac) continue;
+        row.fix = {
+          lat: ac.lat,
+          lon: ac.lon,
+          alt: ac.alt_baro == null || ac.alt_baro === "ground" ? "" : `${ac.alt_baro} ft`,
+        };
+      } catch {
+        // A missing fix just leaves the route line.
+      }
+    }
+  }
+  await Promise.all([run(), run(), run()]);
+}
+
+await attachFixes(data.arrivals ?? []);
+
 const used = new Set(["BOS"]);
 for (const flight of data.flights) used.add(flight.to);
 for (const row of data.arrivals ?? []) used.add(row.from);
@@ -142,7 +173,11 @@ const html = `<!doctype html>
       const t = Date.parse(iso);
       return Number.isFinite(t) && t >= Date.now() - 20 * 60 * 1000 && t <= Date.now() + Number(span) * 3600 * 1000;
     };
-    const carrier = (fn) => (String(fn || "").toUpperCase().match(/^([A-Z0-9]{2})\\d/) || [])[1] || "";
+    const carrier = (fn) => {
+      const code = (String(fn || "").toUpperCase().match(/^([A-Z0-9]{2})\d/) || [])[1] || "";
+      return code === "5X" ? "UPS" : code;
+    };
+    const mark = (code) => (code === "5X" ? "UPS" : code);
     const pill = (st, detail) => {
       const kind = /cancel|delay|divert/i.test(st) ? "bad" : /depart|land|on time|airborne/i.test(st) ? "good" : "wait";
       return '<span class="pill ' + kind + '">' + esc(detail || st || "—") + "</span>";
@@ -162,7 +197,7 @@ const html = `<!doctype html>
       const places = new Set();
       const rows = tab === "arr" ? arrivals : tab === "lard" ? routings : flights;
       for (const row of rows) {
-        const code = tab === "lard" ? row.partner || carrier(row.outbound) || carrier(row.inbound) : carrier(row.fn);
+        const code = tab === "lard" ? mark(row.partner || carrier(row.outbound) || carrier(row.inbound)) : carrier(row.fn);
         if (code) airlines.add(code);
         if (row.equip) types.add(row.equip);
         const place = tab === "arr" ? row.from : tab === "lard" ? row.outboundTo || row.inboundFrom : row.to;
@@ -191,7 +226,7 @@ const html = `<!doctype html>
       }
       if (tab === "lard") {
         return routings.filter((row) => {
-          const code = row.partner || carrier(row.outbound) || carrier(row.inbound);
+          const code = mark(row.partner || carrier(row.outbound) || carrier(row.inbound));
           return code === (airline || code) && (!kind || row.equip === kind) && (!place || (row.outboundTo || row.inboundFrom) === place) && hoursOk(row.outboundIso || row.inboundIso) && matchStatus(row.outboundKind, true) && queryHit((row.tail + " " + row.inbound + " " + row.outbound + " " + row.outboundTo + " " + row.inboundFrom).toLowerCase());
         });
       }
@@ -220,7 +255,7 @@ const html = `<!doctype html>
         return '<tr data-id="' + esc(key) + '" data-apt="' + esc(row.from) + '" data-into="1" class="' + (selected === key ? "on" : "") + '">' + cell(esc(row.date + " " + row.t) + '<div class="mute">ETA ' + esc(row.eta || row.t) + "</div>") + cell("<b>" + esc(row.fn) + '</b><div class="mute">' + esc(row.al) + "</div>") + cell("<b>" + esc(row.from) + "</b> " + esc(row.city) + (row.gate ? '<div class="mute">Gate ' + esc(row.gate) + "</div>" : "")) + cell("<b>" + esc(row.tail || "—") + "</b>") + cell("<b>" + esc((DATA.edcts || {})[row.fn + "|" + row.from] || "—") + "</b>") + cell(pill(row.st, row.detail)) + "</tr>";
       }
       if (tab === "lard") {
-        const code = row.partner || carrier(row.outbound) || carrier(row.inbound);
+        const code = mark(row.partner || carrier(row.outbound) || carrier(row.inbound));
         const logo = code ? '<img class="logo" alt="' + esc(code) + '" src="https://pics.avs.io/120/36/' + esc(code) + '.png">' : "—";
         const gate = row.outboundGate && row.inboundGate && row.outboundGate !== row.inboundGate ? row.inboundGate + "/" + row.outboundGate : row.outboundGate || row.inboundGate || "—";
         return '<tr data-id="' + esc(row.id) + '" data-apt="' + esc(row.outboundTo || row.inboundFrom) + '" data-into="' + (row.outboundTo ? "0" : "1") + '" class="' + (selected === row.id ? "on" : "") + '">' + cell(logo) + cell("<b>" + esc(row.inbound || "—") + "</b>") + cell(esc(row.inboundFrom || "—")) + cell("<b>" + esc(row.eta || "—") + "</b>") + cell("<b>" + esc(row.tail || "—") + "</b>") + cell("<b>" + esc(row.outbound || "—") + "</b>") + cell(esc(row.outboundTo || "—")) + cell("<b>" + esc(row.etd || "—") + "</b>") + cell(esc(gate)) + "</tr>";
@@ -267,6 +302,14 @@ const html = `<!doctype html>
         const line = L.polyline(leg.into ? arc([place[1], place[2]], DATA.bos) : arc(DATA.bos, [place[1], place[2]]), { color: hot.length ? "#c4512c" : "#0e3a5d", weight: hot.length ? 3 : 1.2, opacity: hot.length ? 0.9 : 0.28 }).addTo(routes);
         bounds = bounds ? bounds.extend(line.getBounds()) : line.getBounds();
       }
+      if (tab === "arr" && selected) {
+        const row = arrivals.find((item) => "arr|" + item.fn + "|" + item.t === selected);
+        if (row && row.fix) {
+          L.circleMarker([row.fix.lat, row.fix.lon], { radius: 8, color: "#c4512c", weight: 3, fillColor: "#14202b", fillOpacity: 1 }).addTo(routes).bindPopup("<b>" + esc(row.fn + " " + (row.tail || "") + (row.fix.alt ? " · " + row.fix.alt : "")) + "</b>");
+          const spot = L.latLng(row.fix.lat, row.fix.lon);
+          bounds = bounds ? bounds.extend(spot) : L.latLngBounds(spot, spot);
+        }
+      }
       if (bounds && bounds.isValid()) map.fitBounds(bounds.pad(0.2), { maxZoom: 5 });
     }
     function setTab(next) { tab = next; selected = ""; choices(); draw(); }
@@ -279,6 +322,15 @@ const html = `<!doctype html>
       if (!tr) return;
       selected = tr.dataset.id || "";
       draw();
+      if (tab !== "arr") return;
+      const row = arrivals.find((item) => "arr|" + item.fn + "|" + item.t === selected);
+      if (!row || !row.tail || row.st === "Landed" || row.st === "Cancelled" || row.st === "Diverted" || !(row.live || row.st === "Estimated" || row.st === "Airborne")) return;
+      fetch("https://api.adsb.lol/v2/reg/" + encodeURIComponent(row.tail)).then((response) => response.ok ? response.json() : null).then((json) => {
+        const ac = json && (json.ac || []).find((item) => Number.isFinite(item.lat) && Number.isFinite(item.lon));
+        if (!ac) return;
+        row.fix = { lat: ac.lat, lon: ac.lon, alt: ac.alt_baro && ac.alt_baro !== "ground" ? ac.alt_baro + " ft" : "" };
+        if (selected === "arr|" + row.fn + "|" + row.t) draw();
+      }).catch(() => undefined);
     });
     document.body.addEventListener("error", (event) => {
       const img = event.target;

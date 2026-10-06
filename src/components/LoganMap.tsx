@@ -8,15 +8,18 @@ export type MapLeg = {
   into: boolean;
 };
 
+export type Craft = { lat: number; lon: number; label: string };
+
 type Props = {
   legs: MapLeg[];
   selected: string;
+  craft?: Craft | null;
   home?: [number, number];
   code?: string;
   place?: string;
 };
 
-export function LoganMap({ legs, selected, home = BOS, code = "BOS", place = "Logan" }: Props) {
+export function LoganMap({ legs, selected, craft = null, home = BOS, code = "BOS", place = "Logan" }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const mapRef = useRef<import("leaflet").Map | null>(null);
   const routesRef = useRef<import("leaflet").LayerGroup | null>(null);
@@ -77,15 +80,29 @@ export function LoganMap({ legs, selected, home = BOS, code = "BOS", place = "Lo
         }).addTo(routes);
         focus = focus ? focus.extend(line.getBounds()) : line.getBounds();
       }
-      if (hot.length && focus && fitted.current !== selected) {
-        fitted.current = selected;
+      if (craft) {
+        L.circleMarker([craft.lat, craft.lon], {
+          radius: 8,
+          color: "#c4512c",
+          weight: 3,
+          fillColor: "#14202b",
+          fillOpacity: 1,
+        })
+          .addTo(routes)
+          .bindPopup(`<b>${craft.label.replace(/[&<>]/g, "")}</b>`);
+        const spot = L.latLng(craft.lat, craft.lon);
+        focus = focus ? focus.extend(spot) : L.latLngBounds(spot, spot);
+      }
+      const fitKey = `${selected}|${craft?.lat ?? ""}|${craft?.lon ?? ""}`;
+      if ((hot.length || craft) && focus && fitted.current !== fitKey) {
+        fitted.current = fitKey;
         map.fitBounds(focus.pad(0.35));
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [home, legs, selected]);
+  }, [craft, home, legs, selected]);
 
   return <div ref={host} className="h-full w-full" />;
 }
